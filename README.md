@@ -2,7 +2,7 @@
 
 A comprehensive Streamlit-based dashboard for analyzing energy consumption patterns using machine learning and statistical methods, with advanced anomaly detection capabilities.
 
-![Dashboard Overview](placeholder-dashboard-overview.png)
+![Dashboard Overview](image.png)
 _Main dashboard interface showing the multi-tab analysis system_
 
 ## 🚀 Features
@@ -24,8 +24,7 @@ _Main dashboard interface showing the multi-tab analysis system_
 - **Bulk Processing**: Train multiple models simultaneously
 - **Data Export**: Download results as CSV files
 
-![Feature Engineering](placeholder-feature-engineering.png)
-_Example of correlation matrix and feature importance analysis_
+![Feature Engineering](<newplot (1).png>)
 
 ## 📊 Supported Device Types
 
@@ -126,8 +125,7 @@ _Example of proper CSV data format and folder organization_
 3. Upload via the sidebar file uploader
 4. Adjust minimum data points threshold if needed
 
-![Upload Interface](placeholder-upload-interface.png)
-_File upload interface with validation messages_
+![Upload Interface](image-1.png)
 
 ### 2. Data Overview
 
@@ -138,7 +136,9 @@ Navigate through the tabs to explore your data:
 - **Device Analysis**: Device type comparison and patterns
 - **Floor Analysis**: Floor-level energy distribution
 
-![Overview Tab](placeholder-overview-tab.png)
+![Building Analysis](image-3.png)
+![Building Analysis](image-4.png)
+![Cental Limit Theorem Analysis](image-2.png)
 _Data overview tab showing consumption patterns and Central Limit Theorem analysis_
 
 ### 3. Model Training
@@ -147,17 +147,23 @@ Choose between two training modes:
 
 #### Individual Device Training
 
+![Individual Device Training](image-5.png)
+
 - Select specific devices for detailed analysis
 - Get comprehensive model performance metrics
 - View feature importance and predictions
 
 #### Bulk Training
 
+![Bulk Training](image-7.png)
+![Aggregate Training](image-8.png)
+
 - Train multiple models simultaneously
 - Generate training summary with performance heatmaps
 - Support for aggregated datasets (buildings, device types, floors)
 
-![Model Training](placeholder-model-training.png)
+![Model Performance Comparison](image-9.png)
+![Model Performance Heatmap](image-10.png)
 _Model training interface showing performance comparison and heatmaps_
 
 ### 4. Anomaly Detection
@@ -169,7 +175,8 @@ The system automatically detects anomalies using statistical methods:
 - Calculates potential energy savings
 - Provides detailed anomaly patterns by hour and day
 
-![Anomaly Detection](placeholder-anomaly-detection.png)
+![Anomaly Detection](image-11.png)
+![Anomaly Pattern](image-12.png)
 _Anomaly detection visualization showing identified outliers and savings potential_
 
 ### 5. Economic Analysis
@@ -188,7 +195,8 @@ Two calculation methods available:
 - Evaluate any energy efficiency initiative
 - Compare different scenarios
 
-![Economic Analysis](placeholder-economic-analysis.png)
+![Manual Calculator](image-13.png)
+![Calcuation Results](image-14.png)
 _Economic analysis showing cash flow projections and financial metrics_
 
 ## 📊 Key Metrics Explained
@@ -212,8 +220,9 @@ _Economic analysis showing cash flow projections and financial metrics_
 - **Anomaly Rate**: Percentage of data points identified as anomalous
 - **Savings Potential**: Sum of excess consumption above threshold
 
-![Metrics Dashboard](placeholder-metrics-dashboard.png)
-_Comprehensive metrics dashboard showing all key performance indicators_
+![Anomaly Detection](image-11.png)
+![Anomaly Pattern](image-12.png)
+_Anomaly detection visualization showing identified outliers and savings potential_
 
 ## 🧠 Machine Learning Pipeline
 
@@ -238,7 +247,8 @@ The system trains three models and automatically selects the best performer:
 - Chronological splitting to prevent data leakage
 - Cross-validation on temporal data
 
-![ML Pipeline](placeholder-ml-pipeline.png)
+![Data Preprocessing Pipeline](image-15.png)
+![Modelling Pipeline](image-16.png)
 _Machine learning pipeline flowchart showing data processing and model training_
 
 ## 🔬 Statistical Analysis
@@ -253,7 +263,8 @@ The dashboard includes CLT analysis to validate data quality:
 
 This helps verify that your data is suitable for statistical analysis and that the machine learning models can make reliable predictions.
 
-![CLT Analysis](placeholder-clt-analysis.png)
+![CLT Analysis](image-18.png)
+![CLT Analysis](image-19.png)
 _Central Limit Theorem visualization showing population and sample distributions_
 
 ## 📈 Visualization Features

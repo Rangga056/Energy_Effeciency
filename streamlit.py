@@ -797,7 +797,7 @@ def run_training_process(device_id, device_data, status_text=None, progress_call
         'features_for_model': features_for_model, 
         'dropped_features': dropped_features,
         'test_data': {'X_test': X_test, 'y_test': y_test},
-        'full_data': {'X': df[features_for_model], 'y': df[TARGET_VARIABLE]},
+        'full_data': {'X': df[features_for_model], 'y': df[TARGET_VARIABLE], 'df': df}, # Store the full df here
         'prediction_error_std': prediction_error_std,
         'all_features': df.columns.tolist()
     }
@@ -1570,7 +1570,9 @@ if uploaded_zip_file:
                                                         device_options, key="single_device_select")
             
             if st.button("Train Model & Calculate Savings for Selected Device", key="single_train_btn"):
-                run_training_process(selected_device_for_training, valid_files[selected_device_for_training])
+                with st.spinner(f"Training models for {selected_device_for_training}... This may take a moment."):
+                    run_training_process(selected_device_for_training, valid_files[selected_device_for_training])
+                st.success(f"Training complete for {selected_device_for_training}!")
 
             if selected_device_for_training in st.session_state.analysis_results:
                 display_detailed_results(selected_device_for_training)
