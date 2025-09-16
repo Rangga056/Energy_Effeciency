@@ -113,9 +113,6 @@ Your CSV files must contain:
 - `Konsumsi Energi`: Energy consumption values in Wh
 - Additional weather/environmental columns (optional but recommended)
 
-![Data Structure](placeholder-data-structure.png)
-_Example of proper CSV data format and folder organization_
-
 ## 🎯 Usage Guide
 
 ### 1. Data Upload
@@ -222,6 +219,7 @@ _Economic analysis showing cash flow projections and financial metrics_
 
 ![Anomaly Detection](image-11.png)
 ![Anomaly Pattern](image-12.png)
+
 _Anomaly detection visualization showing identified outliers and savings potential_
 
 ## 🧠 Machine Learning Pipeline
@@ -249,7 +247,7 @@ The system trains three models and automatically selects the best performer:
 
 ![Data Preprocessing Pipeline](image-15.png)
 ![Modelling Pipeline](image-16.png)
-_Machine learning pipeline flowchart showing data processing and model training_
+<br/>_Machine learning pipeline flowchart showing data processing and model training_
 
 ## 🔬 Statistical Analysis
 
