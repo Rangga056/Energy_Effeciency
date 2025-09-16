@@ -24,7 +24,7 @@ _Main dashboard interface showing the multi-tab analysis system_
 - **Bulk Processing**: Train multiple models simultaneously
 - **Data Export**: Download results as CSV files
 
-![Feature Engineering](<newplot (1).png>)
+![Feature Engineering](correlation.png)
 
 ## 📊 Supported Device Types
 
