@@ -9,7 +9,7 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import os
 import json
 import joblib
@@ -166,7 +166,7 @@ RELEVANT_COLUMNS = [
 DEVICE_OPERATING_HOURS = {
     'ahu': (8, 16), 'sdp': (0, 23), 'lift': (7, 20), 'chiller': (8, 17)
 }
-CORE_BUSINESS_HOURS = (9, 17)
+CORE_BUSINESS_HOURS = (8, 17)
 DEFAULT_OPERATING_HOURS = (8, 17)
 
 # Initialize session state
@@ -182,6 +182,8 @@ if 'model_based_savings' not in st.session_state:
     st.session_state.model_based_savings = {}
 if 'last_bulk_run_devices' not in st.session_state:
     st.session_state.last_bulk_run_devices = []
+if 'last_bulk_run_aggregates' not in st.session_state:
+    st.session_state.last_bulk_run_aggregates = []
 if 'anomaly_results' not in st.session_state:
     st.session_state.anomaly_results = {}
 if 'training_summary' not in st.session_state:
@@ -192,7 +194,6 @@ def generate_unique_key():
     """Generate a unique key for Streamlit elements"""
     return str(uuid.uuid4())
 
-### UPDATE ###
 # Helper function to convert dataframe to CSV for download
 @st.cache_data
 def to_csv(df):
@@ -205,7 +206,8 @@ def engineer_features(df):
     df_engineered = df.copy()
     
     # Feature engineering
-    for i in range(1, 4):
+    lags_to_create = [1, 2, 3, 24, 48, 168]
+    for i in lags_to_create:
         df_engineered[f'Konsumsi_Energi_Lag_{i}'] = df_engineered[TARGET_VARIABLE].shift(i)
     
     df_engineered['rolling_mean_3h'] = df_engineered[TARGET_VARIABLE].shift(1).rolling(window=3).mean()
@@ -215,8 +217,17 @@ def engineer_features(df):
     years = df_engineered.index.year.unique()
     id_holidays = holidays.Indonesia(years=years)
     df_engineered['isHoliday'] = df_engineered.index.isin(id_holidays).astype(int)
-    df_engineered['hour'] = df_engineered.index.hour
-    df_engineered['day_of_week'] = df_engineered.index.dayofweek
+    
+    # Save temporary time features
+    hour = df_engineered.index.hour
+    day_of_week = df_engineered.index.dayofweek
+
+    # Replace old time features with cyclical ones
+    df_engineered['hour_sin'] = np.sin(2 * np.pi * hour / 24)
+    df_engineered['hour_cos'] = np.cos(2 * np.pi * hour / 24)
+    df_engineered['day_of_week_sin'] = np.sin(2 * np.pi * day_of_week / 7)
+    df_engineered['day_of_week_cos'] = np.cos(2 * np.pi * day_of_week / 7)
+
     df_engineered['week_of_year'] = df_engineered.index.isocalendar().week.astype(int)
     df_engineered['month_of_year'] = df_engineered.index.month
     
@@ -300,8 +311,9 @@ def train_models(X_train, y_train, X_val, y_val, X_test, y_test, status_text=Non
     
     # LSTM
     if status_text: status_text.text("Training Model 3/3: LSTM...")
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
+    scaler_X = StandardScaler()
+    scaler_y = StandardScaler()
+    
     X_train_s = scaler_X.fit_transform(X_train)
     y_train_s = scaler_y.fit_transform(y_train.values.reshape(-1, 1))
     X_val_s = scaler_X.transform(X_val)
@@ -359,8 +371,8 @@ def analyze_consumption_patterns(df, device_identifier):
     patterns['off_peak_consumption'] = hourly_avg.min()
     
     # Business hours vs non-business hours analysis
-    business_hours_data = df[(df.index.hour >= 9) & (df.index.hour <= 17) & (df.index.dayofweek < 5)]
-    non_business_data = df[~((df.index.hour >= 9) & (df.index.hour <= 17) & (df.index.dayofweek < 5))]
+    business_hours_data = df[(df.index.hour >= CORE_BUSINESS_HOURS[0]) & (df.index.hour <= CORE_BUSINESS_HOURS[1]) & (df.index.dayofweek < 5)]
+    non_business_data = df[~((df.index.hour >= CORE_BUSINESS_HOURS[0]) & (df.index.hour <= CORE_BUSINESS_HOURS[1]) & (df.index.dayofweek < 5))]
     
     patterns['business_hours_avg'] = business_hours_data[TARGET_VARIABLE].mean() if not business_hours_data.empty else 0
     patterns['non_business_avg'] = non_business_data[TARGET_VARIABLE].mean() if not non_business_data.empty else 0
@@ -428,12 +440,12 @@ def detect_anomalies_detailed(df, model_data, features_for_model, device_id):
         'total_data_points': len(anomaly_df),
         'total_anomalies_2std': total_anomalies_2std,
         'total_anomalies_3std': total_anomalies_3std,
-        'anomaly_rate_2std': (total_anomalies_2std / len(anomaly_df)) * 100,
-        'anomaly_rate_3std': (total_anomalies_3std / len(anomaly_df)) * 100,
+        'anomaly_rate_2std': (total_anomalies_2std / len(anomaly_df)) * 100 if len(anomaly_df) > 0 else 0,
+        'anomaly_rate_3std': (total_anomalies_3std / len(anomaly_df)) * 100 if len(anomaly_df) > 0 else 0,
         'total_savings_2std_wh': total_savings_2std,
         'total_savings_3std_wh': total_savings_3std,
-        'savings_percentage_2std': (total_savings_2std / total_consumption) * 100,
-        'savings_percentage_3std': (total_savings_3std / total_consumption) * 100,
+        'savings_percentage_2std': (total_savings_2std / total_consumption) * 100 if total_consumption > 0 else 0,
+        'savings_percentage_3std': (total_savings_3std / total_consumption) * 100 if total_consumption > 0 else 0,
         'prediction_error_std': prediction_error_std
     }
     
@@ -631,6 +643,29 @@ def visualize_clt(data, title_prefix="", unique_key=""):
         <p><strong>CLT Verification:</strong> The sample means should approximate a normal distribution with mean ≈ {theo_mean:.2f} and std ≈ {theo_std:.2f}</p>
     </div>
     """, unsafe_allow_html=True)
+
+    # Add verdict on CLT quality
+    actual_std = np.std(sample_means)
+    if theo_std > 0:
+        std_diff_percent = (abs(actual_std - theo_std) / theo_std) * 100
+    else:
+        std_diff_percent = 0
+
+    if std_diff_percent < 15:
+        verdict_message = f"""
+        <div class="success-message">
+            <strong>Hasil CLT: Baik.</strong><br>
+            Distribusi rata-rata sampel (kanan) mendekati kurva normal teoretis. Standar deviasi aktual ({actual_std:.2f}) sangat dekat dengan standar deviasi teoretis ({theo_std:.2f}), dengan perbedaan hanya {std_diff_percent:.2f}%. Ini menunjukkan bahwa data Anda berperilaku sesuai prediksi statistik, meningkatkan kepercayaan pada analisis lebih lanjut.
+        </div>
+        """
+    else:
+        verdict_message = f"""
+        <div class="warning-message">
+            <strong>Hasil CLT: Cukup Baik.</strong><br>
+            Meskipun distribusi rata-rata sampel (kanan) menunjukkan tendensi normal, terdapat perbedaan yang cukup signifikan ({std_diff_percent:.2f}%) antara standar deviasi aktual ({actual_std:.2f}) dan teoretis ({theo_std:.2f}). Hal ini bisa disebabkan oleh adanya outlier atau variasi yang tinggi dalam data populasi. Meskipun demikian, teorema ini masih berlaku.
+        </div>
+        """
+    st.markdown(verdict_message, unsafe_allow_html=True)
     
     # Add explanation box
     st.markdown("""
@@ -763,11 +798,14 @@ def run_training_process(device_id, device_data, status_text=None, progress_call
     val_df = df.iloc[train_size:train_size + val_size]
     test_df = df.iloc[train_size + val_size:]
 
-    independent_features, dropped_features = remove_multicollinear_features(df, TARGET_VARIABLE)
+    # Move multicollinearity removal to after data splitting
+    # This prevents information leakage from validation/test sets into feature selection.
+    independent_features, dropped_features = remove_multicollinear_features(train_df, TARGET_VARIABLE)
     lag_cols = [col for col in df.columns if 'Lag' in col or 'rolling' in col]
     features_for_model = lag_cols + independent_features
-    features_for_model = [f for f in features_for_model if f in df.columns]
-
+    # Ensure all selected features exist in the dataframe (important after removal)
+    features_for_model = [f for f in features_for_model if f in train_df.columns]
+    
     X_train, y_train = train_df[features_for_model], train_df[TARGET_VARIABLE]
     X_val, y_val = val_df[features_for_model], val_df[TARGET_VARIABLE]
     X_test, y_test = test_df[features_for_model], test_df[TARGET_VARIABLE]
@@ -776,7 +814,7 @@ def run_training_process(device_id, device_data, status_text=None, progress_call
     model_results = train_models(X_train, y_train, X_val, y_val, X_test, y_test, status_text, progress_callback)
     best_model_name = min(model_results, key=lambda k: model_results[k]['metrics']['mae'])
     
-    # Anomaly detection
+    # Anomaly detection setup
     best_model_data = model_results[best_model_name]
     val_predictions = None
     if best_model_name == 'LSTM':
@@ -818,7 +856,7 @@ def run_training_process(device_id, device_data, status_text=None, progress_call
         'savings_percentage': anomaly_summary['savings_percentage_2std']
     }
 
-def display_detailed_results(device_id):
+def display_detailed_results(device_id, unique_context=""):
     """Renders all detailed visualizations for a trained model from session_state."""
     if device_id not in st.session_state.analysis_results:
         st.warning(f"No training results found for {device_id}. Please train the model first.")
@@ -866,7 +904,7 @@ def display_detailed_results(device_id):
         height=height,
         xaxis_tickangle=-45
     )
-    st.plotly_chart(fig_corr_all, use_container_width=True, key=f"corr_all_{device_id}")
+    st.plotly_chart(fig_corr_all, use_container_width=True, key=f"corr_all_{device_id}_{unique_context}")
     
     # Show used features and their correlation with target
     used_features = results['features_for_model']
@@ -880,9 +918,8 @@ def display_detailed_results(device_id):
         corr_df = pd.DataFrame(target_correlations).sort_values('Correlation', key=abs, ascending=False)
         st.subheader("Fitur yang Digunakan")
         st.dataframe(corr_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(corr_df)
-        st.download_button("Download Used Features as CSV", csv, f"{device_id}_used_features.csv", "text/csv", key=f'download-corr-{device_id}')
+        st.download_button("Download Used Features as CSV", csv, f"{device_id}_used_features.csv", "text/csv", key=f'download-corr-{device_id}_{unique_context}')
     
     # Show dropped features with reasons
     dropped_features = results['dropped_features']
@@ -896,9 +933,8 @@ def display_detailed_results(device_id):
             })
         dropped_df = pd.DataFrame(dropped_reasons)
         st.dataframe(dropped_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(dropped_df)
-        st.download_button("Download Dropped Features as CSV", csv, f"{device_id}_dropped_features.csv", "text/csv", key=f'download-dropped-{device_id}')
+        st.download_button("Download Dropped Features as CSV", csv, f"{device_id}_dropped_features.csv", "text/csv", key=f'download-dropped-{device_id}_{unique_context}')
     else:
         st.info("Tidak ada fitur yang dihapus karena multikolinearitas.")
     
@@ -909,9 +945,8 @@ def display_detailed_results(device_id):
     comparison_data = [{'Model': name, **res['metrics']} for name, res in model_results.items()]
     comparison_df = pd.DataFrame(comparison_data)
     st.dataframe(comparison_df.rename(columns={'mae': 'MAE (Wh)', 'rmse': 'RMSE (Wh)', 'r2': 'R² Score'}), use_container_width=True)
-    ### UPDATE ###
     csv = to_csv(comparison_df)
-    st.download_button("Download Model Metrics as CSV", csv, f"{device_id}_model_metrics.csv", "text/csv", key=f'download-metrics-{device_id}')
+    st.download_button("Download Model Metrics as CSV", csv, f"{device_id}_model_metrics.csv", "text/csv", key=f'download-metrics-{device_id}_{unique_context}')
     
     best_model_name = results['best_model_name']
     st.success(f"🏆 Model Terbaik: **{best_model_name}**")
@@ -945,7 +980,7 @@ def display_detailed_results(device_id):
         }).sort_values('Pentingnya', ascending=False).head(15)
         fig_imp = px.bar(importance_df, x='Pentingnya', y='Fitur', orientation='h', 
                          title=f'15 Fitur Terpenting - {best_model_name}')
-        st.plotly_chart(fig_imp, use_container_width=True, key=f"imp_{device_id}")
+        st.plotly_chart(fig_imp, use_container_width=True, key=f"imp_{device_id}_{unique_context}")
 
     fig_scatter = go.Figure()
     fig_scatter.add_trace(go.Scatter(x=y_test.values, y=best_predictions, mode='markers', 
@@ -955,18 +990,18 @@ def display_detailed_results(device_id):
                                      name='Prediksi Sempurna', line=dict(color='red', dash='dash')))
     fig_scatter.update_layout(title=f'Aktual vs. Prediksi - {best_model_name}', 
                               xaxis_title='Konsumsi Aktual (Wh)', yaxis_title='Konsumsi Prediksi (Wh)', height=500)
-    st.plotly_chart(fig_scatter, use_container_width=True, key=f"scatter_{device_id}")
+    st.plotly_chart(fig_scatter, use_container_width=True, key=f"scatter_{device_id}_{unique_context}")
 
     plot_df = pd.DataFrame({'Aktual': y_test, 'Prediksi': best_predictions}).sort_index()
     fig_ts = go.Figure()
     fig_ts.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Aktual'], mode='lines', 
-                               name='Data Aktual', line=dict(color='blue', width=2)))
+                                name='Data Aktual', line=dict(color='blue', width=2)))
     fig_ts.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Prediksi'], mode='lines', 
-                               name='Hasil Prediksi', line=dict(color='red', dash='dash', width=2)))
+                                name='Hasil Prediksi', line=dict(color='red', dash='dash', width=2)))
     fig_ts.update_layout(title=f'Prediksi vs. Aktual pada Data Uji - {best_model_name}', 
                          xaxis_title='Waktu', yaxis_title='Konsumsi Energi (Wh)', height=500, 
                          legend=dict(x=0.01, y=0.99))
-    st.plotly_chart(fig_ts, use_container_width=True, key=f"ts_{device_id}")
+    st.plotly_chart(fig_ts, use_container_width=True, key=f"ts_{device_id}_{unique_context}")
     
     # Tahap 4: Deteksi Anomali dan Potensi Penghematan
     st.markdown("---")
@@ -1027,7 +1062,7 @@ def display_detailed_results(device_id):
             xaxis_title='Waktu', yaxis_title='Konsumsi Energi (Wh)',
             height=500, hovermode='x unified'
         )
-        st.plotly_chart(fig_anomaly, use_container_width=True, key=f"anomaly_{device_id}")
+        st.plotly_chart(fig_anomaly, use_container_width=True, key=f"anomaly_{device_id}_{unique_context}")
         
         # Anomaly patterns analysis
         st.subheader("Pola Anomali")
@@ -1041,10 +1076,10 @@ def display_detailed_results(device_id):
             }).reset_index()
             
             fig_hourly = px.bar(hourly_anomalies, x='hour', y='is_anomaly_2std',
-                                  title='Distribusi Anomali per Jam')
+                                title='Distribusi Anomali per Jam')
             fig_hourly.update_xaxes(title='Jam')
             fig_hourly.update_yaxes(title='Jumlah Anomali')
-            st.plotly_chart(fig_hourly, use_container_width=True, key=f"hourly_anomaly_{device_id}")
+            st.plotly_chart(fig_hourly, use_container_width=True, key=f"hourly_anomaly_{device_id}_{unique_context}")
             
         with col2:
             # Daily anomaly pattern
@@ -1057,10 +1092,10 @@ def display_detailed_results(device_id):
             })
             
             fig_daily = px.bar(daily_anomalies, x='day_name', y='is_anomaly_2std',
-                                  title='Distribusi Anomali per Hari')
+                                title='Distribusi Anomali per Hari')
             fig_daily.update_xaxes(title='Hari')
             fig_daily.update_yaxes(title='Jumlah Anomali')
-            st.plotly_chart(fig_daily, use_container_width=True, key=f"daily_anomaly_{device_id}")
+            st.plotly_chart(fig_daily, use_container_width=True, key=f"daily_anomaly_{device_id}_{unique_context}")
         
         # Detailed explanation
         st.markdown(f"""
@@ -1077,6 +1112,59 @@ def display_detailed_results(device_id):
     else:
         st.warning("Data hasil deteksi anomali tidak ditemukan.")
 
+def analyze_and_display_anomalies(df, title, key_prefix):
+    """Analyzes and displays anomaly scenarios."""
+    st.subheader(title)
+
+    anomalies_df = df[df['is_anomaly_2std']].copy()
+
+    if anomalies_df.empty:
+        st.info("No anomalies detected for this selection.")
+        return
+
+    # Scenario 1: Outside Work Hours
+    outside_hours_df = anomalies_df[(anomalies_df['hour'] < CORE_BUSINESS_HOURS[0]) | (anomalies_df['hour'] > CORE_BUSINESS_HOURS[1])]
+    
+    # Scenario 2: Inside Work Hours
+    inside_hours_df = anomalies_df[(anomalies_df['hour'] >= CORE_BUSINESS_HOURS[0]) & (anomalies_df['hour'] <= CORE_BUSINESS_HOURS[1])]
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### Scenario 1: Anomalies Outside Work Hours")
+        st.caption(f"Before {CORE_BUSINESS_HOURS[0]}:00 and after {CORE_BUSINESS_HOURS[1]}:00")
+        if outside_hours_df.empty:
+            st.success("No anomalies detected outside work hours.")
+        else:
+            total_kwh = outside_hours_df['anomaly_2std'].sum() / 1000
+            st.metric("Total Anomalous Consumption", f"{total_kwh:.2f} kWh")
+            st.metric("Number of Anomalies", f"{len(outside_hours_df):,}")
+            
+            fig_hourly = px.bar(outside_hours_df.groupby('hour')['anomaly_2std'].sum().reset_index(), 
+                                x='hour', y='anomaly_2std', title="Anomalous Consumption by Hour (Outside Work Hours)")
+            st.plotly_chart(fig_hourly, use_container_width=True, key=f"{key_prefix}_outside_hourly")
+            
+            top_anomalies = outside_hours_df.sort_values('anomaly_2std', ascending=False).head(10)
+            st.write("Top 10 Largest Anomalies (Outside Work Hours)")
+            st.dataframe(top_anomalies[['timestamp', 'actual_consumption', 'predicted_consumption', 'anomaly_2std']], use_container_width=True)
+
+    with col2:
+        st.markdown("#### Scenario 2: Anomalies Inside Work Hours")
+        st.caption(f"Between {CORE_BUSINESS_HOURS[0]}:00 and {CORE_BUSINESS_HOURS[1]}:00")
+        if inside_hours_df.empty:
+            st.success("No anomalies detected inside work hours.")
+        else:
+            total_kwh = inside_hours_df['anomaly_2std'].sum() / 1000
+            st.metric("Total Anomalous Consumption", f"{total_kwh:.2f} kWh")
+            st.metric("Number of Anomalies", f"{len(inside_hours_df):,}")
+
+            fig_hourly = px.bar(inside_hours_df.groupby('hour')['anomaly_2std'].sum().reset_index(), 
+                                x='hour', y='anomaly_2std', title="Anomalous Consumption by Hour (Inside Work Hours)")
+            st.plotly_chart(fig_hourly, use_container_width=True, key=f"{key_prefix}_inside_hourly")
+            
+            top_anomalies = inside_hours_df.sort_values('anomaly_2std', ascending=False).head(10)
+            st.write("Top 10 Largest Anomalies (Inside Work Hours)")
+            st.dataframe(top_anomalies[['timestamp', 'actual_consumption', 'predicted_consumption', 'anomaly_2std']], use_container_width=True)
 
 # Main content area
 if uploaded_zip_file:
@@ -1181,7 +1269,6 @@ if uploaded_zip_file:
     st.subheader("📁 File Information (Auto-Detected from ZIP)")
     filename_df = pd.DataFrame(filename_info)
     st.dataframe(filename_df, use_container_width=True)
-    ### UPDATE ###
     csv = to_csv(filename_df)
     st.download_button(
         label="Download File Info as CSV",
@@ -1196,10 +1283,10 @@ if uploaded_zip_file:
 
     # Create tabs
     tab_list = [
-        "📈 Data Overview", "🏢 Building Analysis", "🔧 Device Analysis", "🏢 Floor Analysis", 
-        "🤖 Model Training", "🔍 Individual Analysis", "💰 Economic Analysis", "📊 Methodology"
+        "📈 Data Overview", "🏢 Building Analysis", "🔧 Device Analysis (All Buildings)", "🏢 Device Analysis (Per Building)", "🏢 Floor Analysis", 
+        "🤖 Model Training", "🚨 Anomaly Analysis", "🔍 Individual Analysis", "💰 Economic Analysis", "📊 Methodology"
     ]
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(tab_list)
+    tab1, tab2, tab3, tab3_new, tab4, tab5, tab9, tab6, tab7, tab8 = st.tabs(tab_list)
     
     with tab1:
         st.subheader("📈 Data Overview - All Files")
@@ -1265,7 +1352,6 @@ if uploaded_zip_file:
         
         building_df = pd.DataFrame(building_metrics)
         st.dataframe(building_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(building_df)
         st.download_button("Download Building Metrics as CSV", csv, "building_metrics.csv", "text/csv", key='download-building-metrics')
         
@@ -1303,7 +1389,6 @@ if uploaded_zip_file:
                 with col2:
                     st.dataframe(df_pie[['Tipe Perangkat', 'Rata-rata per Unit (kWh)', 'Persentase (%)']], 
                                  use_container_width=True)
-                    ### UPDATE ###
                     csv = to_csv(df_pie)
                     st.download_button(f"Download {building} Device Data as CSV", csv, f"{building}_device_distribution.csv", "text/csv", key=f'download-pie-{building}')
         
@@ -1374,7 +1459,7 @@ if uploaded_zip_file:
             visualize_clt(building_data['df'][TARGET_VARIABLE].values, selected_building, f"building_clt_{selected_building}")
 
     with tab3:
-        st.subheader("🔧 Device Type Analysis")
+        st.subheader("🔧 Device Type Analysis (All Buildings)")
         
         # Device type metrics
         device_metrics = []
@@ -1390,7 +1475,6 @@ if uploaded_zip_file:
         
         device_df = pd.DataFrame(device_metrics)
         st.dataframe(device_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(device_df)
         st.download_button("Download Device Metrics as CSV", csv, "device_type_metrics.csv", "text/csv", key='download-device-metrics')
         
@@ -1404,7 +1488,6 @@ if uploaded_zip_file:
             with col2:
                 st.dataframe(df_pie[['Tipe Perangkat', 'Jumlah Unit', 'Rata-rata per Unit (kWh)', 'Persentase (%)']], 
                              use_container_width=True)
-                ### UPDATE ###
                 csv = to_csv(df_pie)
                 st.download_button("Download Device Distribution as CSV", csv, "device_type_distribution.csv", "text/csv", key='download-device-pie')
 
@@ -1471,6 +1554,113 @@ if uploaded_zip_file:
             visualize_clt(device_data['df'][TARGET_VARIABLE].values, selected_device_type.upper(), 
                           f"device_clt_{selected_device_type}")
 
+    with tab3_new:
+        st.subheader("🏢 Device Analysis (Per Building)")
+
+        # Selector for building
+        selected_building_for_device_analysis = st.selectbox(
+            "Select a Building to Analyze its Devices",
+            options=list(building_agg.keys()),
+            key="device_analysis_building_select"
+        )
+
+        if selected_building_for_device_analysis:
+            # Filter valid_files for the selected building
+            building_specific_files = {
+                device_id: data for device_id, data in valid_files.items()
+                if data['building'] == selected_building_for_device_analysis
+            }
+
+            # Aggregate device types for the selected building
+            building_device_agg = {}
+            temp_device_data = {}
+            for device_id, data in building_specific_files.items():
+                device_type = data['device_type']
+                if device_type not in temp_device_data:
+                    temp_device_data[device_type] = []
+                temp_device_data[device_type].append(data['df'])
+
+            for device_type, dfs in temp_device_data.items():
+                combined_df = pd.concat(dfs, ignore_index=False)
+                building_device_agg[device_type] = {
+                    'df': combined_df,
+                    'total_consumption': combined_df[TARGET_VARIABLE].sum(),
+                    'avg_consumption': combined_df[TARGET_VARIABLE].mean(),
+                    'device_count': len(dfs),
+                    'patterns': analyze_consumption_patterns(combined_df, f"{selected_building_for_device_analysis}-{device_type}")
+                }
+            
+            if not building_device_agg:
+                st.info(f"No device data found for building: {selected_building_for_device_analysis}")
+            else:
+                # Display pie chart and summary table
+                st.markdown(f"### Average Consumption per Unit in {selected_building_for_device_analysis.upper()}")
+                fig_pie_building, df_pie_building = analyze_and_visualize_consumption_by_device_type(
+                    building_device_agg, f"Device Type Distribution in {selected_building_for_device_analysis.upper()}"
+                )
+                if fig_pie_building:
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.plotly_chart(fig_pie_building, use_container_width=True, key=f"device_pie_{selected_building_for_device_analysis}")
+                    with col2:
+                        st.dataframe(df_pie_building[['Tipe Perangkat', 'Jumlah Unit', 'Rata-rata per Unit (kWh)', 'Persentase (%)']], 
+                                     use_container_width=True)
+                        csv = to_csv(df_pie_building)
+                        st.download_button(f"Download Data for {selected_building_for_device_analysis}", csv, f"device_dist_{selected_building_for_device_analysis}.csv", "text/csv", key=f'download_device_dist_{selected_building_for_device_analysis}')
+
+                # Detailed analysis per device type within the building
+                st.markdown("---")
+                st.subheader("Detailed Analysis per Device Type")
+                selected_device_type_in_building = st.selectbox(
+                    "Select Device Type for Detailed View",
+                    options=list(building_device_agg.keys()),
+                    key=f"device_type_select_{selected_building_for_device_analysis}"
+                )
+
+                if selected_device_type_in_building:
+                    device_data = building_device_agg[selected_device_type_in_building]
+                    patterns = device_data['patterns']
+                    
+                    # Metrics and pattern charts
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1: st.metric("Total Consumption", f"{device_data['total_consumption']/1000:.2f} kWh")
+                    with col2: st.metric("Average Consumption", f"{device_data['avg_consumption']:.2f} Wh")
+                    with col3: st.metric("Peak Hour", f"{patterns['peak_hour']}:00")
+                    with col4: st.metric("Device Count", device_data['device_count'])
+
+                    colA, colB, colC = st.columns(3)
+                    with colA:
+                        fig = go.Figure(go.Scatter(
+                            x=list(patterns['hourly'].index), y=patterns['hourly'].values, 
+                            mode='lines+markers', name=f"{selected_device_type_in_building.upper()} Hourly Pattern"
+                        ))
+                        fig.update_layout(title=f"Hourly Pattern", xaxis_title="Hour of Day", yaxis_title="Consumption (Wh)", height=400)
+                        st.plotly_chart(fig, use_container_width=True, key=f"building_device_hourly_{selected_device_type_in_building}")
+
+                    with colB:
+                        days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                        fig = go.Figure(go.Bar(x=days, y=patterns['daily'].values, 
+                                               name=f"{selected_device_type_in_building.upper()} Daily Pattern"))
+                        fig.update_layout(title=f"Daily Pattern", xaxis_title="Day of Week", yaxis_title="Consumption (Wh)", height=400)
+                        st.plotly_chart(fig, use_container_width=True, key=f"building_device_daily_{selected_device_type_in_building}")
+                    
+                    with colC:
+                        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                        month_labels = [months[i-1] for i in patterns['monthly'].index]
+                        fig = go.Figure(go.Bar(x=month_labels, y=patterns['monthly'].values, 
+                                               name=f"{selected_device_type_in_building.upper()} Monthly Pattern"))
+                        fig.update_layout(title=f"Monthly Pattern", xaxis_title="Month", yaxis_title="Consumption (Wh)", height=400)
+                        st.plotly_chart(fig, use_container_width=True, key=f"building_device_monthly_{selected_device_type_in_building}")
+
+                    # Central Limit Theorem for selected device type in building
+                    st.markdown("---")
+                    st.subheader(f"Central Limit Theorem Analysis - {selected_device_type_in_building.upper()}")
+                    visualize_clt(
+                        device_data['df'][TARGET_VARIABLE].values, 
+                        f"{selected_building_for_device_analysis.upper()} - {selected_device_type_in_building.upper()}", 
+                        f"building_device_clt_{selected_building_for_device_analysis}_{selected_device_type_in_building}"
+                    )
+
     with tab4:
         st.subheader("🏢 Floor Analysis")
         
@@ -1488,7 +1678,6 @@ if uploaded_zip_file:
         
         floor_df = pd.DataFrame(floor_metrics)
         st.dataframe(floor_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(floor_df)
         st.download_button("Download Floor Metrics as CSV", csv, "floor_metrics.csv", "text/csv", key='download-floor-metrics')
         
@@ -1575,7 +1764,7 @@ if uploaded_zip_file:
                 st.success(f"Training complete for {selected_device_for_training}!")
 
             if selected_device_for_training in st.session_state.analysis_results:
-                display_detailed_results(selected_device_for_training)
+                display_detailed_results(selected_device_for_training, "single")
 
         else: # Bulk Training (Individual & Aggregated)
             st.subheader("Bulk Training - Individual Devices")
@@ -1599,63 +1788,59 @@ if uploaded_zip_file:
 
                 submitted_individual = st.form_submit_button("Start Bulk Training for Selected Individual Devices")
 
-                if submitted_individual:
-                    devices_to_train = [device_id for device_id, is_selected in selected_devices_map.items() if is_selected]
+            if submitted_individual:
+                devices_to_train = [device_id for device_id, is_selected in selected_devices_map.items() if is_selected]
+                
+                if not devices_to_train:
+                    st.warning("Please select at least one device to train.")
+                else:
+                    st.session_state.last_bulk_run_devices = devices_to_train
+                    st.session_state.training_summary = {}
                     
-                    if not devices_to_train:
-                        st.warning("Please select at least one device to train.")
-                    else:
-                        st.session_state.last_bulk_run_devices = devices_to_train
-                        st.session_state.training_summary = {}
-                        
-                        total_tasks = len(devices_to_train)
-                        progress_bar = st.progress(0, text="Starting bulk training...")
-                        status_text = st.empty()
-                        
-                        summary_data = []
-                        
-                        for i, device_id in enumerate(devices_to_train):
-                            device_data = valid_files[device_id]
-                            status_text.text(f"Training device {i+1}/{total_tasks}: {device_id}")
+                    total_tasks = len(devices_to_train)
+                    progress_bar = st.progress(0, text="Starting bulk training...")
+                    status_text = st.empty()
+                    
+                    summary_data = []
+                    
+                    for i, device_id in enumerate(devices_to_train):
+                        device_data = valid_files[device_id]
+                        status_text.text(f"Training device {i+1}/{total_tasks}: {device_id}")
 
-                            # Define a callback to update the main progress bar from the inner function
-                            def update_progress(model_progress):
-                                # model_progress is 1/3, 2/3, or 1.0
-                                overall_progress = (i + model_progress) / total_tasks
-                                progress_bar.progress(overall_progress, text=f"Device {i+1}/{total_tasks}: {device_id}")
+                        def update_progress(model_progress):
+                            overall_progress = (i + model_progress) / total_tasks
+                            progress_bar.progress(overall_progress, text=f"Device {i+1}/{total_tasks}: {device_id}")
 
-                            run_training_process(device_id, device_data, status_text=status_text, progress_callback=update_progress)
+                        run_training_process(device_id, device_data, status_text=status_text, progress_callback=update_progress)
+                        
+                        if device_id in st.session_state.analysis_results:
+                            results = st.session_state.analysis_results[device_id]
+                            model_results = results['model_results']
+                            best_model = results['best_model_name']
                             
-                            if device_id in st.session_state.analysis_results:
-                                results = st.session_state.analysis_results[device_id]
-                                model_results = results['model_results']
-                                best_model = results['best_model_name']
-                                
-                                summary_data.append({
-                                    'Device_ID': device_id,
-                                    'Building': device_data['building'],
-                                    'Device_Type': device_data['device_type'].upper(),
-                                    'Floor': device_data['floor'],
-                                    'Best_Model': best_model,
-                                    'RF_MAE': model_results['RandomForest']['metrics']['mae'],
-                                    'RF_RMSE': model_results['RandomForest']['metrics']['rmse'],
-                                    'RF_R2': model_results['RandomForest']['metrics']['r2'],
-                                    'GB_MAE': model_results['GradientBoosting']['metrics']['mae'],
-                                    'GB_RMSE': model_results['GradientBoosting']['metrics']['rmse'],
-                                    'GB_R2': model_results['GradientBoosting']['metrics']['r2'],
-                                    'LSTM_MAE': model_results['LSTM']['metrics']['mae'],
-                                    'LSTM_RMSE': model_results['LSTM']['metrics']['rmse'],
-                                    'LSTM_R2': model_results['LSTM']['metrics']['r2']
-                                })
+                            summary_data.append({
+                                'Device_ID': device_id,
+                                'Building': device_data['building'],
+                                'Device_Type': device_data['device_type'].upper(),
+                                'Floor': device_data['floor'],
+                                'Best_Model': best_model,
+                                'RF_MAE': model_results['RandomForest']['metrics']['mae'],
+                                'RF_RMSE': model_results['RandomForest']['metrics']['rmse'],
+                                'RF_R2': model_results['RandomForest']['metrics']['r2'],
+                                'GB_MAE': model_results['GradientBoosting']['metrics']['mae'],
+                                'GB_RMSE': model_results['GradientBoosting']['metrics']['rmse'],
+                                'GB_R2': model_results['GradientBoosting']['metrics']['r2'],
+                                'LSTM_MAE': model_results['LSTM']['metrics']['mae'],
+                                'LSTM_RMSE': model_results['LSTM']['metrics']['rmse'],
+                                'LSTM_R2': model_results['LSTM']['metrics']['r2']
+                            })
+                        progress_bar.progress((i + 1) / total_tasks, text=f"Completed: {device_id}")
 
-                            # Ensure the progress bar marks the completion of one full device
-                            progress_bar.progress((i + 1) / total_tasks, text=f"Completed: {device_id}")
+                    st.session_state.training_summary['summary_data'] = summary_data
+                    status_text.success("Pelatihan massal untuk perangkat individu selesai!")
+                    progress_bar.empty()
 
-                        st.session_state.training_summary['summary_data'] = summary_data
-                        status_text.success("Pelatihan massal untuk perangkat individu selesai!")
-                        progress_bar.empty()
-
-            # Display the summary if it exists in the session state (from the run above, or a previous run)
+            # Display the summary if it exists in the session state
             if 'summary_data' in st.session_state.training_summary and st.session_state.training_summary['summary_data']:
                 st.markdown("---")
                 st.subheader("📊 Individual Training Summary")
@@ -1666,7 +1851,6 @@ if uploaded_zip_file:
                 
                 with summary_tab1:
                     st.dataframe(summary_df, use_container_width=True)
-                    ### UPDATE ###
                     csv = to_csv(summary_df)
                     st.download_button("Download Training Summary as CSV", csv, "training_summary.csv", "text/csv", key='download-training-summary')
                 
@@ -1739,7 +1923,29 @@ if uploaded_zip_file:
                     fig_best = px.pie(values=best_model_counts.values, names=best_model_counts.index,
                                       title='Distribution of Best Performing Models')
                     st.plotly_chart(fig_best, use_container_width=True, key="best_model_distribution")
+            
+            # This section shows the detailed results for the devices that were just trained.
+            if 'last_bulk_run_devices' in st.session_state and st.session_state.last_bulk_run_devices:
+                st.markdown("---")
+                st.subheader("🔎 View Detailed Results from Last Individual Bulk Run")
+                st.info("Select a device from the dropdown below to see its detailed analysis, including feature importance, model performance plots, and anomaly detection results.")
+                
+                trained_in_last_run = [dev for dev in st.session_state.last_bulk_run_devices if dev in st.session_state.analysis_results]
 
+                if trained_in_last_run:
+                    selected_device_for_detail_view = st.selectbox(
+                        label="Select a trained device to view details:",
+                        options=trained_in_last_run,
+                        index=len(trained_in_last_run) - 1,
+                        key="individual_bulk_detail_selector"
+                    )
+                    
+                    if selected_device_for_detail_view:
+                        with st.expander(f"Showing details for: **{selected_device_for_detail_view}**", expanded=True):
+                            display_detailed_results(selected_device_for_detail_view, unique_context="individual_bulk_view")
+                else:
+                    st.warning("No completed training results found from the last run to display details for.")
+            
             st.markdown("---")
             st.subheader("Aggregate Model Training")
             st.caption("Latih model pada dataset yang dibuat dengan menggabungkan beberapa perangkat.")
@@ -1753,91 +1959,182 @@ if uploaded_zip_file:
                 }
                 submitted_aggregate = st.form_submit_button("Start Aggregate Training")
 
-                if submitted_aggregate:
-                    training_tasks = {}
-                    
-                    # 1. All data
-                    if agg_options["all_data"]:
-                        all_dfs = [data['df'].copy() for data in valid_files.values()]
-                        if all_dfs:
-                            training_tasks["AGG-ALL_DATA"] = pd.concat(all_dfs).sort_index()
-
-                    # 2. Per Building
-                    if agg_options["per_building"]:
-                        buildings = {data['building'] for data in valid_files.values()}
-                        for building in buildings:
-                            dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building]
-                            if dfs:
-                                training_tasks[f"AGG-BUILDING-{building.upper()}"] = pd.concat(dfs).sort_index()
-
-                    # 3. Per Floor per Building
-                    if agg_options["per_floor"]:
-                        floors = {f"{data['building']}-{data['floor']}" for data in valid_files.values()}
-                        for floor_key in floors:
-                            building, floor = floor_key.split('-', 1)
-                            dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building and data['floor'] == floor]
-                            if dfs:
-                                training_tasks[f"AGG-FLOOR-{floor_key.upper()}"] = pd.concat(dfs).sort_index()
-
-                    # 4. Per Device Type
-                    if agg_options["per_device_type"]:
-                        device_types = {data['device_type'] for data in valid_files.values()}
-                        for dt in device_types:
-                            dfs = [data['df'].copy() for data in valid_files.values() if data['device_type'] == dt]
-                            if dfs:
-                                training_tasks[f"AGG-DEVICE-{dt.upper()}"] = pd.concat(dfs).sort_index()
-
-                    # 5. Per Device Type per Building
-                    if agg_options["per_device_type_building"]:
-                        combos = {(data['building'], data['device_type']) for data in valid_files.values()}
-                        for building, dt in combos:
-                            dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building and data['device_type'] == dt]
-                            if dfs:
-                                training_tasks[f"AGG-{building.upper()}-{dt.upper()}"] = pd.concat(dfs).sort_index()
-                    
-                    if not training_tasks:
-                        st.warning("No aggregation options selected.")
-                    else:
-                        st.info(f"Starting training for {len(training_tasks)} aggregated model(s).")
-                        total_agg_tasks = len(training_tasks)
-                        progress_bar_agg = st.progress(0, text="Starting aggregate training...")
-                        status_text_agg = st.empty()
-                        
-                        for i, (task_name, agg_df) in enumerate(training_tasks.items()):
-                            status_text_agg.text(f"Training aggregate {i+1}/{total_agg_tasks}: {task_name}")
-                            
-                            # Re-engineer features for the aggregated dataframe
-                            engineered_df = engineer_features(agg_df)
-                            
-                            if len(engineered_df) < minimum_rows:
-                                st.warning(f"Skipping '{task_name}': Insufficient data ({len(engineered_df)} rows).")
-                                continue
-
-                            def update_agg_progress(model_progress):
-                                overall_progress = (i + model_progress) / total_agg_tasks
-                                progress_bar_agg.progress(overall_progress, text=f"Aggregate {i+1}/{total_agg_tasks}: {task_name}")
-
-                            synthetic_data = {'df': engineered_df, 'building': 'Agg', 'device_type': task_name, 'floor': 'N/A'}
-                            run_training_process(task_name, synthetic_data, status_text=status_text_agg, progress_callback=update_agg_progress)
-                            
-                            # Ensure progress bar marks full completion for the aggregate task
-                            progress_bar_agg.progress((i + 1) / total_agg_tasks, text=f"Completed: {task_name}")
-
-                        st.success("Aggregate model training complete!")
-
-            # Display training summary and results after any training run
-            if st.session_state.analysis_results:
-                st.markdown("---")
-                st.subheader("📊 Training Results")
+            if submitted_aggregate:
+                st.session_state.last_bulk_run_aggregates = []  # Reset on new run
+                training_tasks = {}
                 
-                trained_devices = list(st.session_state.analysis_results.keys())
-                selected_device_for_results = st.selectbox(
-                    "Select a device/aggregate to view detailed results",
-                    options=trained_devices,
-                    index=len(trained_devices)-1 # Default to the last trained model
-                )
-                if selected_device_for_results:
-                    display_detailed_results(selected_device_for_results)
+                # 1. All data
+                if agg_options["all_data"]:
+                    all_dfs = [data['df'].copy() for data in valid_files.values()]
+                    if all_dfs:
+                        training_tasks["AGG-ALL_DATA"] = pd.concat(all_dfs).sort_index()
+
+                # 2. Per Building
+                if agg_options["per_building"]:
+                    buildings = {data['building'] for data in valid_files.values()}
+                    for building in buildings:
+                        dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building]
+                        if dfs:
+                            training_tasks[f"AGG-BUILDING-{building.upper()}"] = pd.concat(dfs).sort_index()
+
+                # 3. Per Floor per Building
+                if agg_options["per_floor"]:
+                    floors = {f"{data['building']}-{data['floor']}" for data in valid_files.values()}
+                    for floor_key in floors:
+                        building, floor = floor_key.split('-', 1)
+                        dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building and data['floor'] == floor]
+                        if dfs:
+                            training_tasks[f"AGG-FLOOR-{floor_key.upper()}"] = pd.concat(dfs).sort_index()
+
+                # 4. Per Device Type
+                if agg_options["per_device_type"]:
+                    device_types = {data['device_type'] for data in valid_files.values()}
+                    for dt in device_types:
+                        dfs = [data['df'].copy() for data in valid_files.values() if data['device_type'] == dt]
+                        if dfs:
+                            training_tasks[f"AGG-DEVICE-{dt.upper()}"] = pd.concat(dfs).sort_index()
+
+                # 5. Per Device Type per Building
+                if agg_options["per_device_type_building"]:
+                    combos = {(data['building'], data['device_type']) for data in valid_files.values()}
+                    for building, dt in combos:
+                        dfs = [data['df'].copy() for data in valid_files.values() if data['building'] == building and data['device_type'] == dt]
+                        if dfs:
+                            training_tasks[f"AGG-{building.upper()}-{dt.upper()}"] = pd.concat(dfs).sort_index()
+                
+                if not training_tasks:
+                    st.warning("No aggregation options selected.")
+                else:
+                    st.info(f"Starting training for {len(training_tasks)} aggregated model(s).")
+                    total_agg_tasks = len(training_tasks)
+                    progress_bar_agg = st.progress(0, text="Starting aggregate training...")
+                    status_text_agg = st.empty()
+                    
+                    for i, (task_name, agg_df) in enumerate(training_tasks.items()):
+                        status_text_agg.text(f"Training aggregate {i+1}/{total_agg_tasks}: {task_name}")
+                        
+                        engineered_df = engineer_features(agg_df)
+                        
+                        if len(engineered_df) < minimum_rows:
+                            st.warning(f"Skipping '{task_name}': Insufficient data ({len(engineered_df)} rows).")
+                            continue
+
+                        def update_agg_progress(model_progress):
+                            overall_progress = (i + model_progress) / total_agg_tasks
+                            progress_bar_agg.progress(overall_progress, text=f"Aggregate {i+1}/{total_agg_tasks}: {task_name}")
+
+                        synthetic_data = {'df': engineered_df, 'building': 'Agg', 'device_type': task_name, 'floor': 'N/A'}
+                        run_training_process(task_name, synthetic_data, status_text=status_text_agg, progress_callback=update_agg_progress)
+                        st.session_state.last_bulk_run_aggregates.append(task_name)
+                        
+                        progress_bar_agg.progress((i + 1) / total_agg_tasks, text=f"Completed: {task_name}")
+
+                    st.success("Aggregate model training complete!")
+
+            # This section shows the detailed results for the aggregate tasks that were just trained.
+            if 'last_bulk_run_aggregates' in st.session_state and st.session_state.last_bulk_run_aggregates:
+                st.markdown("---")
+                st.subheader("🔎 View Detailed Aggregate Training Results")
+                st.info("Select an aggregated task to see its detailed analysis.")
+                
+                trained_aggregates = [task for task in st.session_state.last_bulk_run_aggregates if task in st.session_state.analysis_results]
+
+                if trained_aggregates:
+                    selected_agg_for_detail_view = st.selectbox(
+                        label="Select a trained aggregate task to view details:",
+                        options=trained_aggregates,
+                        index=len(trained_aggregates) - 1,
+                        key="aggregate_bulk_detail_selector"
+                    )
+                    
+                    if selected_agg_for_detail_view:
+                        with st.expander(f"Showing details for: **{selected_agg_for_detail_view}**", expanded=True):
+                            display_detailed_results(selected_agg_for_detail_view, unique_context="aggregate_bulk_view")
+                else:
+                    st.warning("No completed aggregate training results to display.")
+    
+    with tab9:
+        st.subheader("🚨 Detailed Anomaly Analysis")
+
+        if not st.session_state.anomaly_results:
+            st.warning("No anomaly results found. Please train at least one model on the '🤖 Model Training' tab first.")
+        else:
+            analysis_level = st.selectbox(
+                "Choose analysis level:",
+                ("Overall", "By Building", "By Device Type", "By Device Type per Building", "By Floor", "By Individual Device"),
+                key="anomaly_analysis_level"
+            )
+
+            if analysis_level == "Overall":
+                all_anomaly_dfs = [res['anomaly_df'] for res in st.session_state.anomaly_results.values()]
+                if all_anomaly_dfs:
+                    overall_df = pd.concat(all_anomaly_dfs)
+                    analyze_and_display_anomalies(overall_df, "Overall Anomaly Analysis", "overall")
+            
+            elif analysis_level == "By Building":
+                buildings = sorted(list(set(d['building'] for d in valid_files.values())))
+                selected_building = st.selectbox("Select a building:", buildings, key="anomaly_building_select")
+                
+                building_dfs = []
+                for device_id, result in st.session_state.anomaly_results.items():
+                    if valid_files[device_id]['building'] == selected_building:
+                        building_dfs.append(result['anomaly_df'])
+                
+                if building_dfs:
+                    aggregated_df = pd.concat(building_dfs)
+                    analyze_and_display_anomalies(aggregated_df, f"Anomaly Analysis for Building: {selected_building}", f"building_{selected_building}")
+
+            elif analysis_level == "By Device Type":
+                device_types = sorted(list(set(d['device_type'] for d in valid_files.values())))
+                selected_device_type = st.selectbox("Select a device type:", device_types, key="anomaly_device_type_select")
+
+                device_type_dfs = []
+                for device_id, result in st.session_state.anomaly_results.items():
+                    if valid_files[device_id]['device_type'] == selected_device_type:
+                        device_type_dfs.append(result['anomaly_df'])
+                
+                if device_type_dfs:
+                    aggregated_df = pd.concat(device_type_dfs)
+                    analyze_and_display_anomalies(aggregated_df, f"Anomaly Analysis for Device Type: {selected_device_type.upper()}", f"devicetype_{selected_device_type}")
+
+            elif analysis_level == "By Device Type per Building":
+                combos = sorted(list(set(f"{d['building']}-{d['device_type'].upper()}" for d in valid_files.values())))
+                selected_combo = st.selectbox("Select a Building-Device Type combination:", combos, key="anomaly_combo_select")
+
+                if selected_combo:
+                    combo_dfs = []
+                    selected_building, selected_device_type_upper = selected_combo.split('-', 1)
+
+                    for device_id, result in st.session_state.anomaly_results.items():
+                        device_info = valid_files[device_id]
+                        if device_info['building'] == selected_building and device_info['device_type'].upper() == selected_device_type_upper:
+                            combo_dfs.append(result['anomaly_df'])
+
+                    if combo_dfs:
+                        aggregated_df = pd.concat(combo_dfs)
+                        analyze_and_display_anomalies(aggregated_df, f"Anomaly Analysis for {selected_combo}", f"combo_{selected_combo}")
+
+            elif analysis_level == "By Floor":
+                floors = sorted(list(set(f"{d['building']}-{d['floor']}" for d in valid_files.values())))
+                selected_floor = st.selectbox("Select a floor:", floors, key="anomaly_floor_select")
+
+                floor_dfs = []
+                for device_id, result in st.session_state.anomaly_results.items():
+                    floor_key = f"{valid_files[device_id]['building']}-{valid_files[device_id]['floor']}"
+                    if floor_key == selected_floor:
+                        floor_dfs.append(result['anomaly_df'])
+
+                if floor_dfs:
+                    aggregated_df = pd.concat(floor_dfs)
+                    analyze_and_display_anomalies(aggregated_df, f"Anomaly Analysis for Floor: {selected_floor}", f"floor_{selected_floor}")
+            
+            elif analysis_level == "By Individual Device":
+                trained_devices = sorted(list(st.session_state.anomaly_results.keys()))
+                selected_device = st.selectbox("Select a device:", trained_devices, key="anomaly_device_select")
+
+                if selected_device:
+                    device_df = st.session_state.anomaly_results[selected_device]['anomaly_df']
+                    analyze_and_display_anomalies(device_df, f"Anomaly Analysis for Device: {selected_device}", f"device_{selected_device}")
 
     with tab6:
         st.subheader("🔍 Individual Device Analysis")
@@ -2127,7 +2424,6 @@ if uploaded_zip_file:
             for k, v in DEVICE_OPERATING_HOURS.items()
         ])
         st.dataframe(hours_df, use_container_width=True)
-        ### UPDATE ###
         csv = to_csv(hours_df)
         st.download_button("Download Operating Hours as CSV", csv, "device_operating_hours.csv", "text/csv", key='download-operating-hours')
         
